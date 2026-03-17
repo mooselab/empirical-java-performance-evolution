@@ -106,6 +106,12 @@ class RQ1:
             (abs(self.df['effect_size']) >= 0.147)
         )
 
+        # Check if percentage changes are available and handle missing values
+        if 'median_change_percentage' in self.df.columns:
+            print(f"Found {self.df['median_change_percentage'].notna().sum()} rows with percentage change data")
+        else:
+            print("No percentage change data found. Consider running populate_percentage_changes.py")
+
         # Normalize time by project lifespan (0 to 1)
         project_time_ranges = self.df.groupby('project_id')['commit_date'].agg(['min', 'max'])
 
@@ -646,6 +652,208 @@ class RQ1:
 
         return project_stats
 
+    def generate_per_project_statistics(self):
+        """
+        Generate per-project statistics: total method changes, improvements, regressions, unchanged.
+        Returns a DataFrame with all per-project statistics.
+        """
+        print("\n" + "="*100)
+        print("PER-PROJECT STATISTICS")
+        print("="*100)
+
+        # Group by project and count change types
+        project_stats = []
+        for project_id, group in self.df.groupby('project_id'):
+            total = len(group)
+            improvements = len(group[group['change_type'] == 'Improvement'])
+            regressions = len(group[group['change_type'] == 'Regression'])
+            unchanged = len(group[group['change_type'] == 'Unchanged'])
+
+            imp_pct = improvements / total * 100 if total > 0 else 0
+            reg_pct = regressions / total * 100 if total > 0 else 0
+            project_stats.append({
+                'Project name': project_id,
+                'Total method changes': total,
+                'Improvements (n)': improvements,
+                'Improvements (%)': imp_pct,
+                'Regressions (n)': regressions,
+                'Regressions (%)': reg_pct,
+                'Unchanged (n)': unchanged,
+                'Unchanged (%)': unchanged / total * 100 if total > 0 else 0,
+                'Instability Rate (%)': imp_pct + reg_pct,
+            })
+
+        stats_df = pd.DataFrame(project_stats)
+
+        # Sort by total method changes (descending)
+        stats_df = stats_df.sort_values('Total method changes', ascending=False)
+
+        # Print formatted table
+        print(f"\n{'Project name':<35} {'Total':>8} {'Improvements':>18} {'Regressions':>18} {'Unchanged':>18} {'Instability':>12}")
+        print("-" * 115)
+        for _, row in stats_df.iterrows():
+            proj_name = row['Project name'][:32] + '...' if len(row['Project name']) > 35 else row['Project name']
+            print(f"{proj_name:<35} {row['Total method changes']:>8,} "
+                  f"{row['Improvements (n)']:>6,} ({row['Improvements (%)']:>5.1f}%) "
+                  f"{row['Regressions (n)']:>6,} ({row['Regressions (%)']:>5.1f}%) "
+                  f"{row['Unchanged (n)']:>6,} ({row['Unchanged (%)']:>5.1f}%) "
+                  f"{row['Instability Rate (%)']:>10.1f}%")
+
+        print("-" * 115)
+        total_row = stats_df.sum(numeric_only=True)
+        grand_total = total_row['Total method changes']
+        total_instability = (total_row['Improvements (n)'] + total_row['Regressions (n)']) / grand_total * 100 if grand_total > 0 else 0
+        print(f"{'TOTAL':<35} {grand_total:>8,.0f} "
+              f"{total_row['Improvements (n)']:>6,.0f} ({total_row['Improvements (n)']/grand_total*100:>5.1f}%) "
+              f"{total_row['Regressions (n)']:>6,.0f} ({total_row['Regressions (n)']/grand_total*100:>5.1f}%) "
+              f"{total_row['Unchanged (n)']:>6,.0f} ({total_row['Unchanged (n)']/grand_total*100:>5.1f}%) "
+              f"{total_instability:>10.1f}%")
+
+        return stats_df
+
+    def generate_performance_change_magnitude_table(self):
+        """
+        Generate a comprehensive table showing performance change magnitude distribution.
+        This table includes detailed statistics for improvements and regressions with
+        percentage changes and effect size breakdowns.
+        """
+        print("\n" + "="*100)
+        print("PERFORMANCE CHANGE MAGNITUDE DISTRIBUTION")
+        print("="*100)
+
+        # Check if percentage changes are available
+        if 'median_change_percentage' not in self.df.columns:
+            print("ERROR: median_change_percentage column not found in dataset.")
+            print("Please run populate_percentage_changes.py first to add percentage data.")
+            return None
+
+        # Filter data with valid percentage changes
+        df_with_percentages = self.df.dropna(subset=['median_change_percentage']).copy()
+
+        # Convert percentage changes to absolute values for both improvements and regressions
+        df_with_percentages['abs_change_percentage'] = abs(df_with_percentages['median_change_percentage'])
+
+        # Separate by change type
+        improvements = df_with_percentages[df_with_percentages['change_type'] == 'Improvement']
+        regressions = df_with_percentages[df_with_percentages['change_type'] == 'Regression']
+        unchanged = df_with_percentages[df_with_percentages['change_type'] == 'Unchanged']
+
+        def calculate_effect_size_breakdown(data):
+            """Calculate breakdown by effect size categories."""
+            if len(data) == 0:
+                return {'small': 0, 'medium': 0, 'large': 0}
+
+            effect_sizes = data['effect_size'].abs()  # Use absolute values
+            small = len(effect_sizes[(effect_sizes >= 0.147) & (effect_sizes < 0.33)])
+            medium = len(effect_sizes[(effect_sizes >= 0.33) & (effect_sizes < 0.474)])
+            large = len(effect_sizes[effect_sizes >= 0.474])
+
+            return {
+                'small': small,
+                'medium': medium,
+                'large': large,
+                'small_pct': small / len(data) * 100,
+                'medium_pct': medium / len(data) * 100,
+                'large_pct': large / len(data) * 100
+            }
+
+        # Calculate statistics for improvements
+        imp_stats = {}
+        if len(improvements) > 0:
+            imp_percentages = abs(improvements['median_change_percentage'])
+            imp_stats = {
+                'count': len(improvements),
+                'median_percentage': imp_percentages.median(),
+                'mean_percentage': imp_percentages.mean(),
+                'std_percentage': imp_percentages.std(),
+                'q25_percentage': imp_percentages.quantile(0.25),
+                'q75_percentage': imp_percentages.quantile(0.75),
+                'max_percentage': imp_percentages.max(),
+                'effect_breakdown': calculate_effect_size_breakdown(improvements)
+            }
+
+        # Calculate statistics for regressions
+        reg_stats = {}
+        if len(regressions) > 0:
+            reg_percentages = abs(regressions['median_change_percentage'])
+            reg_stats = {
+                'count': len(regressions),
+                'median_percentage': reg_percentages.median(),
+                'mean_percentage': reg_percentages.mean(),
+                'std_percentage': reg_percentages.std(),
+                'q25_percentage': reg_percentages.quantile(0.25),
+                'q75_percentage': reg_percentages.quantile(0.75),
+                'max_percentage': reg_percentages.max(),
+                'effect_breakdown': calculate_effect_size_breakdown(regressions)
+            }
+
+        # Print the table
+        print(f"\nDATA OVERVIEW:")
+        print(f"Total method-level changes with percentage data: {len(df_with_percentages):,}")
+        print(f"Improvements: {len(improvements):,} ({len(improvements)/len(df_with_percentages)*100:.1f}%)")
+        print(f"Regressions: {len(regressions):,} ({len(regressions)/len(df_with_percentages)*100:.1f}%)")
+        print(f"Unchanged: {len(unchanged):,} ({len(unchanged)/len(df_with_percentages)*100:.1f}%)")
+
+        print(f"\n{'='*50}")
+        print(f"PERFORMANCE IMPROVEMENTS")
+        print(f"{'='*50}")
+        if len(improvements) > 0:
+            print(f"Count: {imp_stats['count']:,}")
+            print(f"Median percentage improvement: {imp_stats['median_percentage']:.2f}%")
+            print(f"Mean percentage improvement: {imp_stats['mean_percentage']:.2f}% (±{imp_stats['std_percentage']:.2f}%)")
+            print(f"Quartiles (25th, 50th, 75th): {imp_stats['q25_percentage']:.2f}%, {imp_stats['median_percentage']:.2f}%, {imp_stats['q75_percentage']:.2f}%")
+            print(f"Maximum improvement observed: {imp_stats['max_percentage']:.2f}%")
+
+            print(f"\nEffect Size Breakdown:")
+            eb = imp_stats['effect_breakdown']
+            print(f"  Small effect (0.147 ≤ |d| < 0.33): {eb['small']:,} ({eb['small_pct']:.1f}%)")
+            print(f"  Medium effect (0.33 ≤ |d| < 0.474): {eb['medium']:,} ({eb['medium_pct']:.1f}%)")
+            print(f"  Large effect (|d| ≥ 0.474): {eb['large']:,} ({eb['large_pct']:.1f}%)")
+        else:
+            print("No improvement data available")
+
+        print(f"\n{'='*50}")
+        print(f"PERFORMANCE REGRESSIONS")
+        print(f"{'='*50}")
+        if len(regressions) > 0:
+            print(f"Count: {reg_stats['count']:,}")
+            print(f"Median percentage regression: {reg_stats['median_percentage']:.2f}%")
+            print(f"Mean percentage regression: {reg_stats['mean_percentage']:.2f}% (±{reg_stats['std_percentage']:.2f}%)")
+            print(f"Quartiles (25th, 50th, 75th): {reg_stats['q25_percentage']:.2f}%, {reg_stats['median_percentage']:.2f}%, {reg_stats['q75_percentage']:.2f}%")
+            print(f"Maximum regression observed: {reg_stats['max_percentage']:.2f}%")
+
+            print(f"\nEffect Size Breakdown:")
+            eb = reg_stats['effect_breakdown']
+            print(f"  Small effect (0.147 ≤ |d| < 0.33): {eb['small']:,} ({eb['small_pct']:.1f}%)")
+            print(f"  Medium effect (0.33 ≤ |d| < 0.474): {eb['medium']:,} ({eb['medium_pct']:.1f}%)")
+            print(f"  Large effect (|d| ≥ 0.474): {eb['large']:,} ({eb['large_pct']:.1f}%)")
+        else:
+            print("No regression data available")
+
+        # Comparative analysis
+        if len(improvements) > 0 and len(regressions) > 0:
+            print(f"\n{'='*50}")
+            print(f"COMPARATIVE ANALYSIS")
+            print(f"{'='*50}")
+            print(f"Improvement vs Regression ratio: {len(improvements)/len(regressions):.2f}:1")
+            print(f"Median magnitude comparison: {imp_stats['median_percentage']:.2f}% (improvements) vs {reg_stats['median_percentage']:.2f}% (regressions)")
+            print(f"Mean magnitude comparison: {imp_stats['mean_percentage']:.2f}% (improvements) vs {reg_stats['mean_percentage']:.2f}% (regressions)")
+
+            # Statistical test for magnitude differences
+            imp_percentages = abs(improvements['median_change_percentage'])
+            reg_percentages = abs(regressions['median_change_percentage'])
+
+            statistic, p_value = stats.mannwhitneyu(imp_percentages, reg_percentages, alternative='two-sided')
+            print(f"Mann-Whitney U test for magnitude differences:")
+            print(f"  Statistic: {statistic:.0f}, p-value: {p_value:.6f}")
+            print(f"  Significant difference: {'Yes' if p_value < 0.05 else 'No'}")
+
+        return {
+            'improvements': imp_stats if len(improvements) > 0 else None,
+            'regressions': reg_stats if len(regressions) > 0 else None,
+            'total_with_percentages': len(df_with_percentages)
+        }
+
 
 if __name__ == "__main__":
     dataset = os.path.join('dataset', 'dataset.csv')
@@ -653,12 +861,14 @@ if __name__ == "__main__":
     df = pd.read_csv(dataset)
     analyzer = RQ1(df, output_dir)
 
+    magnitude_stats = analyzer.generate_performance_change_magnitude_table()
     time_proportions = analyzer.plot_performance_change_proportions_over_time()
     lifecycle_comparison = analyzer.plot_lifecycle_stage_comparison()
     lifecycle_stats = analyzer.analyze_lifecycle_stages_detailed()
     effect_size_stats = analyzer.calculate_effect_size_statistics()
     comparison_stats = analyzer.statistical_comparison_improvements_vs_regressions()
     analyzer.generate_lifecycle_stage_statistics()
+    per_project_stats = analyzer.generate_per_project_statistics()
     analyzer.analyze_individual_projects_top5()
     analyzer.generate_individual_project_statistics()
 

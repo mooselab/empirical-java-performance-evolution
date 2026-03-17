@@ -237,6 +237,102 @@ class RQ3:
             ci_upper = prop + 1.96 * se
             print(f"  {category}: {prop*100:.1f}% [{ci_lower*100:.1f}%, {ci_upper*100:.1f}%]")
 
+    def analyze_experience_distribution(self) -> Optional[dict]:
+        """
+        Analyze distribution across experience levels:
+        - Number of developers in each category (Junior, Mid, Senior)
+        - Number of changes per category
+        """
+        if 'author_username' not in self.df.columns or self.df['author_username'].isna().all():
+            print("\n[Experience Distribution] Author info not available. Use dataset_with_authors.csv (run df_generator.py).")
+            return None
+
+        df_valid = self.df.dropna(subset=['experience_category', 'author_username'])
+        categories = ['Junior', 'Mid', 'Senior']
+
+        print("\n" + "=" * 80)
+        print("DISTRIBUTION ACROSS EXPERIENCE LEVELS")
+        print("=" * 80)
+
+        # Developer = (project_id, author_username) within each category
+        dist_data = []
+        for cat in categories:
+            subset = df_valid[df_valid['experience_category'] == cat]
+            n_changes = len(subset)
+            n_developers = subset.groupby(['project_id', 'author_username']).ngroups
+            dist_data.append({
+                'Category': cat,
+                'Developers': n_developers,
+                'Changes': n_changes,
+                'Changes/Developer': n_changes / n_developers if n_developers > 0 else 0,
+            })
+
+        table = tabulate(dist_data, headers='keys', tablefmt='grid', floatfmt='.1f')
+        print("\nDevelopers and changes per experience category:")
+        print(table)
+
+        total_devs = df_valid.groupby(['project_id', 'author_username']).ngroups
+        total_changes = len(df_valid)
+        print(f"\nTotal unique developers (across all categories): {total_devs}")
+        print(f"Total changes: {total_changes}")
+
+        return {row['Category']: row for row in dist_data}
+
+    def analyze_experience_concentration(self) -> Optional[dict]:
+        """
+        Concentration analysis: Are changes evenly distributed across developers within each category?
+        """
+        if 'author_username' not in self.df.columns or self.df['author_username'].isna().all():
+            print("\n[Concentration Analysis] Author info not available. Use dataset_with_authors.csv (run df_generator.py).")
+            return None
+
+        df_valid = self.df.dropna(subset=['experience_category', 'author_username'])
+        categories = ['Junior', 'Mid', 'Senior']
+
+        print("\n" + "=" * 80)
+        print("CONCENTRATION ANALYSIS: Change distribution across developers")
+        print("=" * 80)
+
+        concentration_thresholds = [0.10, 0.25, 0.50]  # Top 10%, 25%, 50%
+        results = {}
+
+        for cat in categories:
+            subset = df_valid[df_valid['experience_category'] == cat]
+            if len(subset) == 0:
+                continue
+
+            changes_per_dev = subset.groupby(['project_id', 'author_username']).size().sort_values(ascending=False)
+            n_developers = len(changes_per_dev)
+            total_changes = changes_per_dev.sum()
+
+            if n_developers == 0:
+                continue
+
+            results[cat] = {'n_developers': n_developers, 'total_changes': total_changes}
+
+            # Cumulative share of changes (from top contributors downward)
+            cumsum = changes_per_dev.cumsum()
+            cumsum_pct = cumsum / total_changes
+
+            # Gini-like: what % of changes do top X% of developers account for?
+            print(f"\n{cat.upper()} (n={n_developers} developers, {total_changes} changes):")
+            for pct in concentration_thresholds:
+                n_devs_at_threshold = max(1, int(np.ceil(n_developers * pct)))
+                changes_by_top = changes_per_dev.iloc[:n_devs_at_threshold].sum()
+                pct_of_changes = 100 * changes_by_top / total_changes
+                print(f"  Top {pct*100:.0f}% of developers ({n_devs_at_threshold}) account for {pct_of_changes:.1f}% of changes")
+
+            # Evenness: if perfectly even, each dev would have total_changes/n_developers
+            expected_even = total_changes / n_developers
+            actual_median = changes_per_dev.median()
+            print(f"  Median changes per developer: {actual_median:.1f} (even distribution would be {expected_even:.1f})")
+
+            # Simple concentration ratio: share of top developer
+            top1_share = 100 * changes_per_dev.iloc[0] / total_changes
+            print(f"  Top contributor's share: {top1_share:.1f}%")
+
+        return results
+
     def analyze_complexity_performance_correlation(self):
         """
         Analyze correlation between complexity scores and performance impact.
@@ -458,6 +554,8 @@ if __name__ == "__main__":
 
     visualizer = RQ3(df, output_dir)
     visualizer.show_experience_change_distribution()
+    visualizer.analyze_experience_distribution()
+    visualizer.analyze_experience_concentration()
     visualizer.comprehensive_experience_analysis()
     visualizer.analyze_complexity_performance_correlation()
     visualizer.plot_experience_and_complexity_impact_analysis()

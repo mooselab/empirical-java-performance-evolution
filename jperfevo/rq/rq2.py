@@ -2,7 +2,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import chi2_contingency, fisher_exact
+from scipy.stats import chi2_contingency, fisher_exact, mannwhitneyu
 import itertools
 import seaborn as sns
 import os
@@ -175,7 +175,7 @@ class RQ2:
 
         chi2, p_value, dof, expected = chi2_contingency(contingency_data)
 
-        print(f"Chi-square test for differences across categories:")
+        print(f"Chi-square test for differences across categories (all categories):")
         print(f"  Chi-square statistic: {chi2:.3f}")
         print(f"  p-value: {p_value:.6f}")
         print(f"  Significant difference: {'Yes' if p_value < 0.05 else 'No'}")  # type: ignore
@@ -184,6 +184,27 @@ class RQ2:
         n = sum(stats['total_commits'] for stats in results.values())
         cramers_v = np.sqrt(chi2 / (n * (min(len(contingency_data), len(contingency_data[0])) - 1)))  # type: ignore
         print(f"  Effect size (Cramér's V): {cramers_v:.3f}")
+
+        # Analysis excluding "Concurrency/Parallelism"
+        categories_excluding_concurrency = [cat for cat in categories if 'Concurrency/Parallelism' not in cat]
+        contingency_data_excluding = []
+
+        for category in categories_excluding_concurrency:
+            stats = results[category]
+            contingency_data_excluding.append([stats['improvements'], stats['regressions'], stats['Unchanged']])
+
+        if len(contingency_data_excluding) > 0:
+            chi2_excluding, p_value_excluding, dof_excluding, expected_excluding = chi2_contingency(contingency_data_excluding)
+
+            print(f"\nChi-square test for differences across categories (excluding Concurrency/Parallelism):")
+            print(f"  Chi-square statistic: {chi2_excluding:.3f}")
+            print(f"  p-value: {p_value_excluding:.6f}")
+            print(f"  Significant difference: {'Yes' if p_value_excluding < 0.05 else 'No'}")  # type: ignore
+
+            # Effect size (Cramér's V)
+            n_excluding = sum(results[cat]['total_commits'] for cat in categories_excluding_concurrency)
+            cramers_v_excluding = np.sqrt(chi2_excluding / (n_excluding * (min(len(contingency_data_excluding), len(contingency_data_excluding[0])) - 1)))  # type: ignore
+            print(f"  Effect size (Cramér's V): {cramers_v_excluding:.3f}")
 
         print(f"\n{'CATEGORY RANKINGS:'}")
 
@@ -390,6 +411,213 @@ class RQ2:
 
         return significant_pairs
 
+    def analyze_single_vs_multi_label_changes(self):
+        """
+        Analyze differences between changes with exactly 1 label vs 2+ labels.
+        Compares performance impact distributions between single-label and multi-label changes.
+        """
+        print("\n" + "="*80)
+        print("SINGLE-LABEL vs MULTI-LABEL CHANGES ANALYSIS")
+        print("="*80)
+
+        df_analysis = self.df.copy()
+
+        # Count number of labels per change
+        df_analysis['code_change_label'] = df_analysis['code_change_label'].fillna('Unknown')
+        df_analysis['label_count'] = df_analysis['code_change_label'].apply(
+            lambda x: len(x.split('+')) if x != 'Unknown' else 0
+        )
+
+        # Categorize as single-label (1) vs multi-label (2+)
+        df_analysis['label_category'] = df_analysis['label_count'].apply(
+            lambda x: 'Single-label' if x == 1 else ('Multi-label' if x >= 2 else 'No label')
+        )
+
+        df_analysis = df_analysis[df_analysis['label_category'] != 'No label']
+
+        # Count changes by label category
+        single_label_count = len(df_analysis[df_analysis['label_category'] == 'Single-label'])
+        multi_label_count = len(df_analysis[df_analysis['label_category'] == 'Multi-label'])
+        total_count = single_label_count + multi_label_count
+
+        print(f"\nLabel Distribution:")
+        print(f"  Single-label changes (exactly 1 label): {single_label_count} ({single_label_count/total_count*100:.1f}%)")
+        print(f"  Multi-label changes (2+ labels): {multi_label_count} ({multi_label_count/total_count*100:.1f}%)")
+        print(f"  Total: {total_count}")
+
+        # Compare performance impact distributions
+        print(f"\nPerformance Impact Distribution Comparison:")
+
+        for category in ['Single-label', 'Multi-label']:
+            subset = df_analysis[df_analysis['label_category'] == category]
+            total = len(subset)
+
+            improvements = len(subset[subset['change_type'] == 'Improvement'])
+            regressions = len(subset[subset['change_type'] == 'Regression'])
+            unchanged = len(subset[subset['change_type'] == 'Unchanged'])
+
+            print(f"\n{category}:")
+            print(f"  Total changes: {total}")
+            print(f"  Improvements: {improvements} ({improvements/total*100:.1f}%)")
+            print(f"  Regressions: {regressions} ({regressions/total*100:.1f}%)")
+            print(f"  Unchanged: {unchanged} ({unchanged/total*100:.1f}%)")
+
+            # Effect size statistics for significant changes
+            significant = subset[subset['change_type'].isin(['Improvement', 'Regression'])]
+            if len(significant) > 0:
+                effect_sizes = significant['effect_size'].abs()
+                print(f"  Mean effect size (absolute): {effect_sizes.mean():.3f}")
+                print(f"  Median effect size (absolute): {effect_sizes.median():.3f}")
+
+        # Statistical comparison
+        print(f"\nStatistical Comparison:")
+
+        single_subset = df_analysis[df_analysis['label_category'] == 'Single-label']
+        multi_subset = df_analysis[df_analysis['label_category'] == 'Multi-label']
+
+        # Chi-square test for change_type distribution
+        contingency_table = pd.crosstab(
+            df_analysis['label_category'],
+            df_analysis['change_type']
+        )
+
+        chi2, p_value, dof, expected = chi2_contingency(contingency_table.values)
+        print(f"Chi-square test for change_type distribution:")
+        print(f"  Chi-square statistic: {chi2:.3f}")
+        print(f"  p-value: {p_value:.6f}")
+        print(f"  Significant difference: {'Yes' if p_value < 0.05 else 'No'}")
+
+        # Mann-Whitney U test for effect sizes
+        single_effect_sizes = single_subset[single_subset['change_type'].isin(['Improvement', 'Regression'])]['effect_size'].abs()
+        multi_effect_sizes = multi_subset[multi_subset['change_type'].isin(['Improvement', 'Regression'])]['effect_size'].abs()
+
+        if len(single_effect_sizes) > 0 and len(multi_effect_sizes) > 0:
+            u_statistic, u_p_value = mannwhitneyu(single_effect_sizes, multi_effect_sizes, alternative='two-sided')
+            print(f"\nMann-Whitney U test for effect size distributions:")
+            print(f"  U-statistic: {u_statistic:.3f}")
+            print(f"  p-value: {u_p_value:.6f}")
+            print(f"  Significant difference: {'Yes' if u_p_value < 0.05 else 'No'}")
+
+        # Create visualization
+        self._plot_single_vs_multi_label_comparison(df_analysis)
+
+        return {
+            'single_label_count': single_label_count,
+            'multi_label_count': multi_label_count,
+            'single_label_stats': {
+                'improvements': len(single_subset[single_subset['change_type'] == 'Improvement']),
+                'regressions': len(single_subset[single_subset['change_type'] == 'Regression']),
+                'unchanged': len(single_subset[single_subset['change_type'] == 'Unchanged'])
+            },
+            'multi_label_stats': {
+                'improvements': len(multi_subset[multi_subset['change_type'] == 'Improvement']),
+                'regressions': len(multi_subset[multi_subset['change_type'] == 'Regression']),
+                'unchanged': len(multi_subset[multi_subset['change_type'] == 'Unchanged'])
+            }
+        }
+
+    def _plot_single_vs_multi_label_comparison(self, df_analysis: pd.DataFrame):
+        """
+        Create visualization comparing single-label vs multi-label changes.
+        """
+        fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+
+        # Left plot: Proportional impact comparison
+        ax1 = axes[0]
+
+        categories = ['Single-label', 'Multi-label']
+        proportions_data = []
+
+        for category in categories:
+            subset = df_analysis[df_analysis['label_category'] == category]
+            total = len(subset)
+
+            improvements = len(subset[subset['change_type'] == 'Improvement']) / total * 100
+            regressions = len(subset[subset['change_type'] == 'Regression']) / total * 100
+            unchanged = len(subset[subset['change_type'] == 'Unchanged']) / total * 100
+
+            proportions_data.append({
+                'Category': category,
+                'Improvements': improvements,
+                'Regressions': regressions,
+                'Unchanged': unchanged,
+                'Total': total
+            })
+
+        proportions_df = pd.DataFrame(proportions_data)
+
+        improvements = proportions_df['Improvements']
+        regressions = proportions_df['Regressions']
+        unchanged = proportions_df['Unchanged']
+
+        width = 0.6
+        x_pos = np.arange(len(categories))
+
+        ax1.bar(x_pos, improvements, width, label='Improvements', color='#27ae60')
+        ax1.bar(x_pos, regressions, width, bottom=improvements, label='Regressions', color='#e74c3c')
+        ax1.bar(x_pos, unchanged, width, bottom=improvements + regressions, label='Unchanged', color='#3498db')
+
+        # Annotate percentages
+        for i, (imp, reg, unc) in enumerate(zip(improvements, regressions, unchanged)):
+            if imp > 0:
+                ax1.text(i, imp / 2, f"{imp:.1f}%", ha='center', va='center',
+                         color='white', fontweight='bold', fontsize=16)
+            if reg > 0:
+                ax1.text(i, imp + reg / 2, f"{reg:.1f}%", ha='center', va='center',
+                         color='white', fontweight='bold', fontsize=16)
+            if unc > 0:
+                ax1.text(i, imp + reg + unc / 2, f"{unc:.1f}%", ha='center', va='center',
+                         color='white', fontweight='bold', fontsize=16)
+
+        ax1.set_ylabel('Percentage of Changes', fontsize=20, labelpad=15)
+        ax1.set_xlabel('Label Category', fontsize=20, labelpad=15)
+        ax1.set_title('Performance Impact Distribution:\nSingle-label vs Multi-label Changes', fontsize=24, pad=15)
+        ax1.set_xticks(x_pos)
+        ax1.set_xticklabels(categories, fontsize=18)
+        ax1.set_yticks(np.arange(0, 101, 20))
+        ax1.set_yticklabels([f"{tick}%" for tick in np.arange(0, 101, 20)], fontsize=16)
+        self._set_standard_legend_style(ax1, padding_factor=0.02, title='Change Type')
+
+        # Right plot: Effect size distribution comparison
+        ax2 = axes[1]
+
+        single_significant = df_analysis[
+            (df_analysis['label_category'] == 'Single-label') &
+            (df_analysis['change_type'].isin(['Improvement', 'Regression']))
+        ]['effect_size'].abs()
+
+        multi_significant = df_analysis[
+            (df_analysis['label_category'] == 'Multi-label') &
+            (df_analysis['change_type'].isin(['Improvement', 'Regression']))
+        ]['effect_size'].abs()
+
+        if len(single_significant) > 0 and len(multi_significant) > 0:
+            # Create box plot
+            box_data = [single_significant.values, multi_significant.values]
+            bp = ax2.boxplot(box_data, labels=['Single-label', 'Multi-label'],
+                             patch_artist=True, widths=0.6)
+
+            # Color the boxes
+            colors = ['#3498db', '#e67e22']
+            for patch, color in zip(bp['boxes'], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+
+            # Add sample sizes
+            ax2.text(1, ax2.get_ylim()[1] * 0.95, f'n={len(single_significant)}',
+                     ha='center', fontsize=14, fontweight='bold')
+            ax2.text(2, ax2.get_ylim()[1] * 0.95, f'n={len(multi_significant)}',
+                     ha='center', fontsize=14, fontweight='bold')
+
+            ax2.set_ylabel('Absolute Effect Size', fontsize=20, labelpad=15)
+            ax2.set_xlabel('Label Category', fontsize=20, labelpad=15)
+            ax2.set_title('Effect Size Distribution:\nSingle-label vs Multi-label Changes', fontsize=24, pad=15)
+            ax2.tick_params(axis='both', labelsize=16)
+            ax2.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        self.save_plot(plt, 'single_vs_multi_label_comparison')
+
 
 if __name__ == "__main__":
     dataset = os.path.join('dataset', 'dataset.csv')
@@ -401,3 +629,4 @@ if __name__ == "__main__":
     visualizer.generate_effect_size_distribution_by_category()
     visualizer.plot_proportional_impact_by_category()
     visualizer.analyze_statistical_significance_between_categories()
+    visualizer.analyze_single_vs_multi_label_changes()
