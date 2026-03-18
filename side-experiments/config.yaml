@@ -1,0 +1,10 @@
+logging:
+  file: traces/trace.log
+
+instrumentation:
+  targetPackage: com.example
+
+  targetMethods:
+    instrument:
+      - public String com.example.PerformanceBenchmark.benchmarkOptimizedMethod()
+      - public String com.example.PerformanceBenchmark.benchmarkRegressedMethod()
